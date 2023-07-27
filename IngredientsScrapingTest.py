@@ -12,18 +12,25 @@ Side Note: If I use idea 2, then I could write a function that takes in a list o
 and then it could check if it recognizes any of the key brands? This follows the
 assumption that websites of different branches will have the same structure
 (really just need the search button and food product structure to be the same)
+
+Potential issues for other users:
+- Program would not run unless I installed Selenium 4.9.0, due to a timeout error in the requests library.
+- Annoying PATH variable things for the geckodriver executable (strange I didn't need to do anything for my laptop?)
+
 '''
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver import Chrome
 from selenium.webdriver import Firefox
+from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.action_chains import ActionChains as AC
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.actions.wheel_input import ScrollOrigin
 from difflib import SequenceMatcher
 
 from bs4 import BeautifulSoup
@@ -93,6 +100,45 @@ def scrape_squirrel_aldis():
 
 #scrape_squirrel_aldis()
 
+
+def giant_eagle_all_brands(driver, wait, action):
+    '''
+    This function clicks on the Brands button on the Giant Eagle website
+    and finds all of the brand names contained there. It removes the count of each brand, since
+    we only want the names.
+    '''
+    element = wait.until(EC.visibility_of_element_located((By.XPATH, '//button[@aria-label="Brand: "]')))
+    time.sleep(1)
+    action.click(element).perform()
+    time.sleep(1) # not sure if necessary, check on this later
+    all_brand_names = driver.find_elements(By.XPATH, '//div[@class="sc-cgHAeM jVHret"]')
+    result = []
+    for brand in all_brand_names:
+        text = brand.text
+        first_parentheses_idx = text.find('(')
+        if first_parentheses_idx != -1:
+            text = text[:first_parentheses_idx]
+        result.append(text.lower())
+    element.click()
+    return result
+def data_sanitation(ingredients, removable_brand_names):
+    '''
+    This takes in a list of ingredients and removes certain brand name from the product without altering it in
+    another way. The purpose of this is to make the Sequence Matcher more effective.
+    However, we don't want to remove the original ingredients, in case people actually want the specific brand
+
+    Notes: The data sanitation part could probably be more effective.
+    '''
+    shortened_ingredients = []
+    for ingr in ingredients:
+        ingr_lower = ingr.lower()
+        for brand in removable_brand_names:
+            if brand in ingr_lower:
+                short_ingr = ingr_lower.replace(brand, "")
+                shortened_ingredients.append(short_ingr)
+    ingredients = ingredients + shortened_ingredients
+    return ingredients
+
 def print_ingredients(ingredients, line_width, length):
     count = 0
     while count < length:
@@ -126,17 +172,16 @@ def scrape_squirrel_giant_eagle():
         I scroll down by?
 
     '''
-    #ingredient_list = ["Grebinskiy's Teriyaki Sauce", "Cheez-its", "Pringles", "bananas", "Haagen Dazs"]
-    #results = [False] * len(ingredient_list)
-    #item_threshold = 5
-
-    driver = webdriver.Firefox()
-    action = ActionChains(driver)
-    url = "https://shop.gianteagle.com/squirrel-hill/search"
+    options = FirefoxOptions()
+    options.add_argument("--start-maximized")
+    options.add_argument("--headless")
+    driver = webdriver.Firefox(options=options)
+    action = AC(driver)
+    url = "https://shop.gianteagle.com/squirrel-hill/search?cat=20&page=9"
     driver.get(url)
-    driver.maximize_window() # makes the window full_screen
-    #time.sleep(3)
-    wait = WebDriverWait(driver, 10) # wait at most 10 seconds for anything to load
+    #driver.maximize_window() # makes the window full_screen
+    wait = WebDriverWait(driver, 15) # wait at most 10 seconds for anything to load
+    #all_brands = giant_eagle_all_brands(driver, wait, action)
     all_ingredients = []
     try:
         # if we are in category "x" of the website, it clicks on this word x on the page
@@ -148,15 +193,29 @@ def scrape_squirrel_giant_eagle():
         print("Page did not load in time")
         driver.quit()
         return
-
+    driver.get_screenshot_as_file("screenshot1.png")
+    '''
+    # we get the element corresponding to the entire product list to get the size of it.
+    # this is used so that we know how much to scroll down by
+    product_list = driver.find_element(By.XPATH, '//div[@class="ProductsList"]')
+    size = product_list.size
+    height,width = int(size['height']), int(size['width'])
+    # when we scroll down in the while loop, we scroll from the center of the bottom of the page
+    scroll_origin = ScrollOrigin.from_viewport(width // 2, height)
+    
+    (we've commented this out due to swapping back to original scrolling method, which is just using
+    page down keys)
+    '''
     count = 0
     # count is used to limit the number of total iterations that we run for
     first_item_of_prev_iter = ""
     first_item_of_next_iter = ""
+    #driver.get_screenshot_as_file("screenshot2.png")
 
     counter = 0
     # counter is used to check how many iterations we've gotten
     # the same first element.
+    start_time = time.time()
     while count < 100000:
         try:
             # find all product names on the page that load
@@ -167,7 +226,7 @@ def scrape_squirrel_giant_eagle():
             first_item_of_next_iter = items[0].text
             if first_item_of_next_iter == first_item_of_prev_iter:
                 counter += 1
-                if counter > 5:
+                if counter > 10:
                     break
             else:
                 counter = 0
@@ -179,21 +238,28 @@ def scrape_squirrel_giant_eagle():
             # what this does, essentially, is it retries loading the elements that show up
             # while ONLY changing the count number. this problem is reduced if we implement
             # some forced waiting at the start of the while loop, e.g. time.sleep(3)
-            print("\n", "Throwed error on count", count, "\n", e)
+            #print("\n", "Throwed error on count", count, "\n", e)
             count += 1
             continue
-        # scrolls down the page
-        action.send_keys(Keys.PAGE_DOWN)
-        action.send_keys(Keys.PAGE_DOWN)
-        action.perform()
+        # scrolls down the page by the height of the product box, so that we always see an entire page of new items
+        '''
+        #action.scroll_from_origin(scroll_origin,0,height).perform()
+        Spent quite a while trying to get this to work, but it seems to not work in headless mode, so we're just
+        going back to the original method
+        '''
+        action.send_keys(Keys.PAGE_DOWN).send_keys(Keys.PAGE_DOWN).send_keys(Keys.PAGE_DOWN).perform()
         count += 1
         # part of the logic in checking if we've reached the bottom
         first_item_of_prev_iter = first_item_of_next_iter
 
+    end_time = time.time()
+    driver.get_screenshot_as_file("screenshot3.png")
+    print("The time needed for the loop to complete is", end_time - start_time)
     # removes all duplicates from the list, while maintaining the same
     # relative order of the items. there should be quite a lot, so this
     # is a necessary step
     all_ingredients = list(dict.fromkeys(all_ingredients))
+    #all_ingredients = data_sanitation(all_ingredients, all_brands)
     ln = len(all_ingredients)
     print_ingredients(all_ingredients, 5, ln)
     print(ln)
@@ -223,4 +289,4 @@ def check_giant_eagle_store(ingredient_list):
             res[i] = True
     return res
 
-check_giant_eagle_store(["banana", "pringles", "dark chocolate", "blurpies"])
+check_giant_eagle_store(["banana", "pringles", "dark chocolate", "blurpies", "Kosher Apple Pie"])
