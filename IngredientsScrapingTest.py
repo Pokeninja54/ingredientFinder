@@ -32,103 +32,6 @@ import time
 def similar(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
-def test1():
-    options = webdriver.ChromeOptions()
-    #options.headless = True
-    driver = Chrome(options=options)
-    # Store the url of the target site we want to look at
-    url = "https://books.toscrape.com/"
-    # Navigate to the simple website
-    driver.get(url)
-
-    element = driver.find_element(By.LINK_TEXT, "Humor")
-    element.click()
-
-    books = driver.find_elements(By.CSS_SELECTOR, ".product_pod")
-    for book in books:
-        title = book.find_element(By.CSS_SELECTOR, "h3 > a")
-        price = book.find_element(By.CSS_SELECTOR, ".price_color")
-        stock = book.find_element(By.CSS_SELECTOR, ".instock.availability")
-        print(title.get_attribute("title"), price.text, stock.text)
-
-    #product_names = driver.find_elements(By.CLASS_NAME, "row")
-    #print(product_names)
-    driver.quit()
-
-
-def test2():
-    options = webdriver.ChromeOptions()
-    driver = Chrome(options=options)
-    url = "https://www.scrapethissite.com/pages/simple/"
-    driver.get(url)
-    all_countries = driver.find_elements(By.XPATH, '//div[@class="col-md-4 country"][position() = 40]')
-    for country in all_countries:
-        country_name = country.find_element(By.CLASS_NAME, "country-name")
-        print(country_name.text)
-    driver.quit()
-
-def test3():
-    max_page_number = 0
-    curr_page_number = 1
-    options = webdriver.ChromeOptions()
-    options.headless=True
-    driver = Chrome(options=options)
-    url = "https://www.scrapethissite.com/pages/forms/?page_num=1"
-    driver.get(url)
-    '''
-    The code below steps through all of the pages present.
-    ISSUE: How to find the total number of pages through the HTML? Could rewrite it
-    to go until all_teams returns the empty list, but this seems like poor code
-    '''
-    while curr_page_number <= max_page_number:
-        all_teams = driver.find_elements(By.CLASS_NAME, "team")
-        for team in all_teams:
-            print(team.text)
-        if curr_page_number < max_page_number:
-            curr_page_number += 1
-            path = '//ul/li/a[@href="/pages/forms/?page_num=' + str(curr_page_number) + '"]'
-            print(path)
-            next_page = driver.find_element(By.XPATH, path)
-            next_page.click()
-        else:
-            break
-    ''' 
-    The code below takes in a team that I want to look up, enters it into the search box,
-    presses the search button, and then verifies that all the teams are the Los Angeles Kings
-    '''
-    team_of_interest = "Los Angeles Kings"
-    team_search = driver.find_element(By.XPATH, '//input[@type="text"]')
-    search_button = driver.find_element(By.XPATH, '//input[@type="submit"]')
-    team_search.send_keys(team_of_interest)
-    search_button.click()
-    all_teams = driver.find_elements(By.CLASS_NAME, "team")
-    for team in all_teams:
-        print(team.text)
-    driver.quit()
-
-def test4():
-    options = webdriver.ChromeOptions()
-    options.headless=False
-    driver = Chrome(options=options)
-    url = "https://www.scrapethissite.com/pages/ajax-javascript/"
-    driver.get(url)
-    #print(driver.page_source)
-    buttons = driver.find_elements(By.XPATH, '//a[@class="year-link"]')
-    driver.implicitly_wait(10)  # seconds
-    for button in buttons:
-        button.click()
-        try:
-            films = WebDriverWait(driver,10).until(
-                EC.presence_of_all_elements_located((By.XPATH, '//tr[@class="film"]'))
-            )
-        finally:
-            for film in films:
-                print(film.text)
-    #soup = BeautifulSoup(driver.page_source, "html.parser")
-
-    #print(soup.find_all("div", class_="col-md-12"))
-    driver.quit()
-
 def scrape_squirrel_aldis():
     '''
 
@@ -226,77 +129,98 @@ def scrape_squirrel_giant_eagle():
     #ingredient_list = ["Grebinskiy's Teriyaki Sauce", "Cheez-its", "Pringles", "bananas", "Haagen Dazs"]
     #results = [False] * len(ingredient_list)
     #item_threshold = 5
+
     driver = webdriver.Firefox()
     action = ActionChains(driver)
-    url = "https://shop.gianteagle.com/squirrel-hill/search?cat=39&page=4&savings=GEAC"
+    url = "https://shop.gianteagle.com/squirrel-hill/search"
     driver.get(url)
-    driver.maximize_window()
-    time.sleep(5)
-    wait = WebDriverWait(driver, 7)
+    driver.maximize_window() # makes the window full_screen
+    #time.sleep(3)
+    wait = WebDriverWait(driver, 10) # wait at most 10 seconds for anything to load
     all_ingredients = []
     try:
+        # if we are in category "x" of the website, it clicks on this word x on the page
+        # this is necessary because we need the page-down command to work
         element = wait.until(EC.visibility_of_element_located((By.XPATH, '//h1[@class="sc-gJSbpZ kGDYpn"]')))
         element.click()
     except:
+        # if the page doesn't load in time (namely 10 seconds), we quit the program
         print("Page did not load in time")
         driver.quit()
         return
-    #element = driver.find_element(By.XPATH, '//div[@class="ProductsList"]')
-    #element.click()
-    #action.send_keys(Keys.PAGE_DOWN)
-    #action.send_keys(Keys.PAGE_DOWN)
-    #action.perform()
+
     count = 0
+    # count is used to limit the number of total iterations that we run for
     first_item_of_prev_iter = ""
     first_item_of_next_iter = ""
-    '''
-    soup = BeautifulSoup(driver.page_source, "html.parser")
-    products = soup.find_all("div", class_="sc-fbAgdq bNmZPW")
-    for p in products:
-        print(p)
-    '''
+
     counter = 0
-    while count < 500:
-        #driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        #time.sleep(3)
+    # counter is used to check how many iterations we've gotten
+    # the same first element.
+    while count < 100000:
         try:
-            #items = driver.find_elements(By.XPATH, '//div[@class="sc-fbAgdq bNmZPW"]')
+            # find all product names on the page that load
             items = wait.until(EC.presence_of_all_elements_located((By.XPATH, '//div[@class="sc-fbAgdq bNmZPW"]')))
+            # get the first product name that is in the list. the logic below is used
+            # to check if we've hit the bottom of the page, and we keep getting
+            # the same results
             first_item_of_next_iter = items[0].text
             if first_item_of_next_iter == first_item_of_prev_iter:
                 counter += 1
                 if counter > 5:
-                    print("Broke out through counter")
                     break
             else:
                 counter = 0
+            # this may add duplicates to our list, but we don't care
             for item in items:
                 all_ingredients.append(item.text)
-                #print(item.text)
         except Exception as e:
-            print("\n")
-            print("Throwed error on count", count)
-            print(e)
-            print("\n")
+            # this program frequently gets stale exceptions in the try statement above
+            # what this does, essentially, is it retries loading the elements that show up
+            # while ONLY changing the count number. this problem is reduced if we implement
+            # some forced waiting at the start of the while loop, e.g. time.sleep(3)
+            print("\n", "Throwed error on count", count, "\n", e)
             count += 1
             continue
-        #action.send_keys(Keys.PAGE_DOWN)
-        #action.send_keys(Keys.PAGE_DOWN)
+        # scrolls down the page
+        action.send_keys(Keys.PAGE_DOWN)
         action.send_keys(Keys.PAGE_DOWN)
         action.perform()
         count += 1
+        # part of the logic in checking if we've reached the bottom
         first_item_of_prev_iter = first_item_of_next_iter
-    # Quit the browser
 
+    # removes all duplicates from the list, while maintaining the same
+    # relative order of the items. there should be quite a lot, so this
+    # is a necessary step
     all_ingredients = list(dict.fromkeys(all_ingredients))
     ln = len(all_ingredients)
-    print(ln)
     print_ingredients(all_ingredients, 5, ln)
+    print(ln)
+    # writes the results to a file. after all, we don't want to be rerunning this everytime a user makes a request
+    # instead, we should be loading up the file and searching the results on here
     with open('ingredients_output.txt', 'w') as f:
         for item in all_ingredients:
             # write each item on a new line
             f.write(f"{item}\n")
     driver.quit()
 
-# Call the function to scrape Giant Eagle website
+# call the function to scrape Giant Eagle website
 scrape_squirrel_giant_eagle()
+
+def check_giant_eagle_store(ingredient_list):
+    ln = len(ingredient_list)
+    res = [False] * ln
+    with open('ingredients_output.txt') as f:
+        stocked_ingredients = f.read().splitlines()
+    for i in range(ln):
+        item = ingredient_list[i]
+        maxim = 0
+        for stocked_ingr in stocked_ingredients:
+            maxim = max(maxim, similar(item, stocked_ingr))
+        print(maxim)
+        if maxim > 0.65:
+            res[i] = True
+    return res
+
+check_giant_eagle_store(["banana", "pringles", "dark chocolate", "blurpies"])
