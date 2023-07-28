@@ -17,6 +17,13 @@ Potential issues for other users:
 - Program would not run unless I installed Selenium 4.9.0, due to a timeout error in the requests library.
 - Annoying PATH variable things for the geckodriver executable (strange I didn't need to do anything for my laptop?)
 
+Thoughts about Similarity Check:
+- Some products have very long names, such as "Cheez-It Cheese Crackers, Baked Snack Crackers, Lunch Snacks, Original". Thus,
+when looking up items such as "Cheez-It Crackers", token_sort_ratio does not do well, but token_set_ratio is perfect.
+However, token_set_ratio is too broad, since I could be looking for "lemon" and get "lemon cheesecake" instead with token_set_ratio,
+so token_sort_ratio would work correctly here but token_set_ratio would not. It seems difficult to differentiate between these two scenarios,
+so I wonder if there is some better way to deal with this
+
 '''
 
 from selenium import webdriver
@@ -30,18 +37,45 @@ from selenium.webdriver.common.action_chains import ActionChains as AC
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.actions.wheel_input import ScrollOrigin
 from thefuzz import fuzz
 from thefuzz import process
-from difflib import SequenceMatcher
 
 from bs4 import BeautifulSoup
 import time
 
 def similar(a, b):
-    return SequenceMatcher(None, a, b).ratio()
+    return fuzz.token_sort_ratio(a,b)
 
-def scrape_squirrel_aldis():
+def aldis_all_brands(driver, wait):
+    elements = wait.until(EC.visibility_of_all_elements_located((By.XPATH, '//button[@class="e-1ff8o8k"]')))
+    for i in range(len(elements)):
+        elem = elements[i]
+        button_name = elem.find_element(By.XPATH, ".//span").text
+        if button_name == "Brands":
+            elem.click()
+            break
+        if i == len(elements) - 1:
+            return []
+    time.sleep(1)  # not sure if necessary, check on this later
+    all_brand_names = driver.find_elements(By.XPATH, '//label[@class="e-1rv1880"]')
+    result = []
+    for brand in all_brand_names:
+        text = brand.text
+        result.append(text.lower())
+    return result
+
+def aldis_sanitize_data(ingredients, removable_brand_names):
+    shortened_ingredients = []
+    for ingr in ingredients:
+        for brand in removable_brand_names:
+            if brand in ingr:
+                short_ingr = ingr.replace(brand, "")
+                short_ingr = short_ingr.replace(",", "")
+                shortened_ingredients.append(short_ingr)
+    ingredients = ingredients + shortened_ingredients
+    return ingredients
+
+def scrape_squirrel_aldis(ingredient_list):
     '''
 
     Returns: A list indicating which ingredients were found on the online website.
@@ -60,14 +94,12 @@ def scrape_squirrel_aldis():
     #options = webdriver.ChromeOptions()
     #options.headless = False
     start_time = time.time()
-    ingredient_list = ["Grebinskiy's Teriyaki Sauce", "Cheez-its", "Pringles", "bananas", "Haagen Dazs"]
+    ingredient_list = [x.lower() for x in ingredient_list]
     results = [False] * len(ingredient_list)
-    item_threshold = 5
     driver = webdriver.Firefox()
     url = "https://shop.aldi.us/store/aldi/storefront/?current_zip_code=15206&utm_source=yext&utm_medium=local&utm_campaign=brand&utm_content=shopnow_storepage"
     driver.get(url)
     wait = WebDriverWait(driver, 5)
-    #time.sleep(6)
     search_button = wait.until(EC.presence_of_element_located((By.XPATH, '//input[@id="search-bar-input"]')))
     print(search_button)
     i = 0
@@ -75,44 +107,42 @@ def scrape_squirrel_aldis():
         search_button.click() # this clicks the search button so that we can input our search query
         search_button.clear() # this clears anything in the search box
         search_button.send_keys(ingredient, Keys.ENTER) # enters the ingredient we want to look for, and then begins the search
-        #time.sleep(5) # sleep to let the page load (THIS CAN BE BETTER REWRITTEN)
         try:
             element = wait.until(EC.presence_of_element_located((By.XPATH, '//span[@class="e-8zabzc"]')))
         except:
             print("Elements not found for ingredient", ingredient)
             i += 1
             continue
-
+        all_brands = []
+        try:
+            all_brands = aldis_all_brands(driver, wait)
+            print(all_brands)
+        except:
+            print("No brands button")
         page_results = driver.find_elements(By.XPATH, '//span[@class="e-8zabzc"]') # finds all titles of each food item, as this is all we care about
-        count = 0
-        for item in page_results:
-            if count >= item_threshold: # we only want to consider the first k items found, as the results get worse and worse
-                break
-            similarity = similar(item.text, ingredient)
-            print(item.text, similarity)
-            if(similarity > 0.65): # if the similarity rating provided by the SequenceMatcher function is high enough, then the item is in the store
-                results[i] = True
-                break
-            count += 1
+        stocked_items = [item.text.lower() for item in page_results]
+        stocked_items = aldis_sanitize_data(stocked_items, all_brands)
+        (best_match, score) = process.extractOne(ingredient, stocked_items, scorer=fuzz.token_sort_ratio)
+        if score > 85:
+            results[i] = True
+        print(score, best_match, "\n")
+
         i += 1
     driver.quit()
     print(results)
     end_time = time.time()
     print("Total time is ", end_time - start_time)
 
-#scrape_squirrel_aldis()
-
-
-def giant_eagle_all_brands(driver, wait, action):
+def giant_eagle_all_brands(driver, wait):
     '''
     This function clicks on the Brands button on the Giant Eagle website
     and finds all of the brand names contained there. It removes the count of each brand, since
     we only want the names.
     '''
     element = wait.until(EC.visibility_of_element_located((By.XPATH, '//button[@aria-label="Brand: "]')))
-    time.sleep(1)
-    action.click(element).perform()
-    time.sleep(1) # not sure if necessary, check on this later
+    time.sleep(2)
+    element.click()
+    time.sleep(2) # not sure if necessary, check on this later
     all_brand_names = driver.find_elements(By.XPATH, '//div[@class="sc-cgHAeM jVHret"]')
     result = []
     for brand in all_brand_names:
@@ -123,11 +153,12 @@ def giant_eagle_all_brands(driver, wait, action):
         result.append(text.lower())
     element.click()
     return result
-def data_sanitation(ingredients, removable_brand_names):
+def giant_eagle_data_sanitation(ingredients, removable_brand_names):
     '''
     This takes in a list of ingredients and removes certain brand name from the product without altering it in
-    another way. The purpose of this is to make the Sequence Matcher more effective.
-    However, we don't want to remove the original ingredients, in case people actually want the specific brand
+    another way. All commas are removed as well.
+    We append the shortened products to the end instead of changing the original product,
+    incase the specific brand name is wanted
 
     Notes: The data sanitation part could probably be more effective.
     '''
@@ -140,6 +171,7 @@ def data_sanitation(ingredients, removable_brand_names):
                 short_ingr = short_ingr.replace(",", "")
                 shortened_ingredients.append(short_ingr)
     ingredients = ingredients + shortened_ingredients
+    ingredients = [x.lower() for x in ingredients]
     return ingredients
 
 def print_ingredients(ingredients, line_width, length):
@@ -153,7 +185,6 @@ def print_ingredients(ingredients, line_width, length):
 
 def scrape_squirrel_giant_eagle():
     '''
-
     The purpose of this function is to scrape the Giant Eagle website based in Squirrel Hill.
     It takes the products it finds and puts it into a list. I can then search through
     this list later to see if anything matches target ingredient list. This should
@@ -173,18 +204,18 @@ def scrape_squirrel_giant_eagle():
         - Edit: Fullscreening my window significantly reduced this error rate? Now I only
         miss the hershey product... strange. Maybe it has something to do with how much
         I scroll down by?
-
     '''
     options = FirefoxOptions()
     options.add_argument("--start-maximized")
-    options.add_argument("--headless")
+    #options.add_argument("--headless")
     driver = webdriver.Firefox(options=options)
     action = AC(driver)
     url = "https://shop.gianteagle.com/squirrel-hill/search?cat=20&page=9"
     driver.get(url)
+    time.sleep(5)
     #driver.maximize_window() # makes the window full_screen
-    wait = WebDriverWait(driver, 15) # wait at most 10 seconds for anything to load
-    all_brands = giant_eagle_all_brands(driver, wait, action)
+    wait = WebDriverWait(driver, 15) # wait at most 15 seconds for anything to load
+    all_brands = giant_eagle_all_brands(driver, wait)
     all_ingredients = []
     try:
         # if we are in category "x" of the website, it clicks on this word x on the page
@@ -197,29 +228,13 @@ def scrape_squirrel_giant_eagle():
         driver.quit()
         return
     driver.get_screenshot_as_file("screenshot1.png")
-    '''
-    # we get the element corresponding to the entire product list to get the size of it.
-    # this is used so that we know how much to scroll down by
-    product_list = driver.find_element(By.XPATH, '//div[@class="ProductsList"]')
-    size = product_list.size
-    height,width = int(size['height']), int(size['width'])
-    # when we scroll down in the while loop, we scroll from the center of the bottom of the page
-    scroll_origin = ScrollOrigin.from_viewport(width // 2, height)
-    
-    (we've commented this out due to swapping back to original scrolling method, which is just using
-    page down keys)
-    '''
-    count = 0
-    # count is used to limit the number of total iterations that we run for
-    first_item_of_prev_iter = ""
-    first_item_of_next_iter = ""
+    first_item_of_prev_iter, first_item_of_next_iter = "", ""
     #driver.get_screenshot_as_file("screenshot2.png")
 
     counter = 0
     # counter is used to check how many iterations we've gotten
     # the same first element.
-    start_time = time.time()
-    while count < 100000:
+    while True:
         try:
             # find all product names on the page that load
             items = wait.until(EC.presence_of_all_elements_located((By.XPATH, '//div[@class="sc-fbAgdq bNmZPW"]')))
@@ -242,30 +257,19 @@ def scrape_squirrel_giant_eagle():
             # while ONLY changing the count number. this problem is reduced if we implement
             # some forced waiting at the start of the while loop, e.g. time.sleep(3)
             #print("\n", "Throwed error on count", count, "\n", e)
-            count += 1
             continue
-        # scrolls down the page by the height of the product box, so that we always see an entire page of new items
-        '''
-        #action.scroll_from_origin(scroll_origin,0,height).perform()
-        Spent quite a while trying to get this to work, but it seems to not work in headless mode, so we're just
-        going back to the original method
-        '''
         action.send_keys(Keys.PAGE_DOWN).send_keys(Keys.PAGE_DOWN).send_keys(Keys.PAGE_DOWN).perform()
-        count += 1
         # part of the logic in checking if we've reached the bottom
         first_item_of_prev_iter = first_item_of_next_iter
 
-    end_time = time.time()
     driver.get_screenshot_as_file("screenshot3.png")
-    print("The time needed for the loop to complete is", end_time - start_time)
     # removes all duplicates from the list, while maintaining the same
     # relative order of the items. there should be quite a lot, so this
     # is a necessary step
     all_ingredients = list(dict.fromkeys(all_ingredients))
-    all_ingredients = data_sanitation(all_ingredients, all_brands)
+    all_ingredients = giant_eagle_data_sanitation(all_ingredients, all_brands)
     ln = len(all_ingredients)
     print_ingredients(all_ingredients, 5, ln)
-    print(ln)
     # writes the results to a file. after all, we don't want to be rerunning this everytime a user makes a request
     # instead, we should be loading up the file and searching the results on here
     with open('ingredients_output.txt', 'w') as f:
@@ -274,9 +278,6 @@ def scrape_squirrel_giant_eagle():
             f.write(f"{item}\n")
     driver.quit()
 
-# call the function to scrape Giant Eagle website
-#scrape_squirrel_giant_eagle()
-
 def check_giant_eagle_store(ingredient_list):
     ln = len(ingredient_list)
     res = [False] * ln
@@ -284,19 +285,14 @@ def check_giant_eagle_store(ingredient_list):
         stocked_ingredients = f.read().splitlines()
     for i in range(ln):
         item = ingredient_list[i]
-        maxim = 0
-        max_idx = 0
-        j = 0
-        for stocked_ingr in stocked_ingredients:
-            similarity = fuzz.token_sort_ratio(item, stocked_ingr)
-            if similarity > maxim:
-                maxim = similarity
-                max_idx = j
-            j += 1
-        assert(j == len(stocked_ingredients))
-        print(maxim / 100, max_idx, stocked_ingredients[max_idx])
-        if maxim > 0.65:
+        (best_match, score) = process.extractOne(item, stocked_ingredients, scorer=fuzz.token_sort_ratio)
+        if score > 85:
             res[i] = True
+        print(score, best_match, "\n")
     return res
 
-check_giant_eagle_store(["banana", "pringles", "dark chocolate", "blurpies", "kosher apple pie", "non kosher apple pie"])
+#scrape_squirrel_aldis(["banana", "pringles", "dark chocolate", "blurpies", "cheez-it crackers"])
+# call the function to scrape Giant Eagle website
+#scrape_squirrel_giant_eagle()
+print(fuzz.token_set_ratio("lemon cheesecake", "lemon"))
+#check_giant_eagle_store(["banana", "pringles", "dark chocolate", "blurpies", "kosher apple pie", "apple pie", "giant eagle apple pie"])
