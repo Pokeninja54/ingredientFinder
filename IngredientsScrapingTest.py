@@ -31,6 +31,8 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.actions.wheel_input import ScrollOrigin
+from thefuzz import fuzz
+from thefuzz import process
 from difflib import SequenceMatcher
 
 from bs4 import BeautifulSoup
@@ -135,6 +137,7 @@ def data_sanitation(ingredients, removable_brand_names):
         for brand in removable_brand_names:
             if brand in ingr_lower:
                 short_ingr = ingr_lower.replace(brand, "")
+                short_ingr = short_ingr.replace(",", "")
                 shortened_ingredients.append(short_ingr)
     ingredients = ingredients + shortened_ingredients
     return ingredients
@@ -181,7 +184,7 @@ def scrape_squirrel_giant_eagle():
     driver.get(url)
     #driver.maximize_window() # makes the window full_screen
     wait = WebDriverWait(driver, 15) # wait at most 10 seconds for anything to load
-    #all_brands = giant_eagle_all_brands(driver, wait, action)
+    all_brands = giant_eagle_all_brands(driver, wait, action)
     all_ingredients = []
     try:
         # if we are in category "x" of the website, it clicks on this word x on the page
@@ -259,7 +262,7 @@ def scrape_squirrel_giant_eagle():
     # relative order of the items. there should be quite a lot, so this
     # is a necessary step
     all_ingredients = list(dict.fromkeys(all_ingredients))
-    #all_ingredients = data_sanitation(all_ingredients, all_brands)
+    all_ingredients = data_sanitation(all_ingredients, all_brands)
     ln = len(all_ingredients)
     print_ingredients(all_ingredients, 5, ln)
     print(ln)
@@ -272,7 +275,7 @@ def scrape_squirrel_giant_eagle():
     driver.quit()
 
 # call the function to scrape Giant Eagle website
-scrape_squirrel_giant_eagle()
+#scrape_squirrel_giant_eagle()
 
 def check_giant_eagle_store(ingredient_list):
     ln = len(ingredient_list)
@@ -282,11 +285,18 @@ def check_giant_eagle_store(ingredient_list):
     for i in range(ln):
         item = ingredient_list[i]
         maxim = 0
+        max_idx = 0
+        j = 0
         for stocked_ingr in stocked_ingredients:
-            maxim = max(maxim, similar(item, stocked_ingr))
-        print(maxim)
+            similarity = fuzz.token_sort_ratio(item, stocked_ingr)
+            if similarity > maxim:
+                maxim = similarity
+                max_idx = j
+            j += 1
+        assert(j == len(stocked_ingredients))
+        print(maxim / 100, max_idx, stocked_ingredients[max_idx])
         if maxim > 0.65:
             res[i] = True
     return res
 
-check_giant_eagle_store(["banana", "pringles", "dark chocolate", "blurpies", "Kosher Apple Pie"])
+check_giant_eagle_store(["banana", "pringles", "dark chocolate", "blurpies", "kosher apple pie", "non kosher apple pie"])
