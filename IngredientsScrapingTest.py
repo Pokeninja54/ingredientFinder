@@ -91,17 +91,17 @@ def scrape_squirrel_aldis(ingredient_list):
     good enough for "Burman's Teriyaki Sauce". This seems very related to issue #1
 
     '''
-    #options = webdriver.ChromeOptions()
-    #options.headless = False
+    options = FirefoxOptions()
+    options.add_argument("--start-maximized")
+    options.add_argument("--headless")
+    driver = webdriver.Firefox(options=options)
     start_time = time.time()
     ingredient_list = [x.lower() for x in ingredient_list]
     results = [False] * len(ingredient_list)
-    driver = webdriver.Firefox()
     url = "https://shop.aldi.us/store/aldi/storefront/?current_zip_code=15206&utm_source=yext&utm_medium=local&utm_campaign=brand&utm_content=shopnow_storepage"
     driver.get(url)
     wait = WebDriverWait(driver, 5)
     search_button = wait.until(EC.presence_of_element_located((By.XPATH, '//input[@id="search-bar-input"]')))
-    print(search_button)
     i = 0
     for ingredient in ingredient_list:
         search_button.click() # this clicks the search button so that we can input our search query
@@ -125,13 +125,13 @@ def scrape_squirrel_aldis(ingredient_list):
         (best_match, score) = process.extractOne(ingredient, stocked_items, scorer=fuzz.token_sort_ratio)
         if score > 85:
             results[i] = True
-        print(score, best_match, "\n")
+        #print(score, best_match, "\n")
 
         i += 1
     driver.quit()
-    print(results)
+    #print(results)
     end_time = time.time()
-    print("Total time is ", end_time - start_time)
+    #print("Total time is ", end_time - start_time)
 
 def giant_eagle_all_brands(driver, wait):
     '''
@@ -210,7 +210,7 @@ def scrape_squirrel_giant_eagle():
     #options.add_argument("--headless")
     driver = webdriver.Firefox(options=options)
     action = AC(driver)
-    url = "https://shop.gianteagle.com/squirrel-hill/search?cat=20&page=9"
+    url = "https://shop.gianteagle.com/squirrel-hill/search"
     driver.get(url)
     time.sleep(5)
     #driver.maximize_window() # makes the window full_screen
@@ -244,7 +244,7 @@ def scrape_squirrel_giant_eagle():
             first_item_of_next_iter = items[0].text
             if first_item_of_next_iter == first_item_of_prev_iter:
                 counter += 1
-                if counter > 10:
+                if counter > 100:
                     break
             else:
                 counter = 0
@@ -269,7 +269,8 @@ def scrape_squirrel_giant_eagle():
     all_ingredients = list(dict.fromkeys(all_ingredients))
     all_ingredients = giant_eagle_data_sanitation(all_ingredients, all_brands)
     ln = len(all_ingredients)
-    print_ingredients(all_ingredients, 5, ln)
+    print("There are", ln," ingredients")
+    #print_ingredients(all_ingredients, 5, ln)
     # writes the results to a file. after all, we don't want to be rerunning this everytime a user makes a request
     # instead, we should be loading up the file and searching the results on here
     with open('ingredients_output.txt', 'w') as f:
@@ -291,8 +292,17 @@ def check_giant_eagle_store(ingredient_list):
         print(score, best_match, "\n")
     return res
 
+def check_all_stores(ingredient_list):
+    scrape_squirrel_giant_eagle()
+    giant_eagle_results = check_giant_eagle_store(ingredient_list)
+    aldis_results = scrape_squirrel_aldis(ingredient_list)
+    print(giant_eagle_results)
+    print(aldis_results)
+
+ingredient_list = ["banana", "pringles", "dark chocolate", "blurpies", "cheez-it crackers"]
+check_all_stores(ingredient_list)
 #scrape_squirrel_aldis(["banana", "pringles", "dark chocolate", "blurpies", "cheez-it crackers"])
 # call the function to scrape Giant Eagle website
 #scrape_squirrel_giant_eagle()
-print(fuzz.token_set_ratio("lemon cheesecake", "lemon"))
+#print(fuzz.token_set_ratio("lemon cheesecake", "lemon"))
 #check_giant_eagle_store(["banana", "pringles", "dark chocolate", "blurpies", "kosher apple pie", "apple pie", "giant eagle apple pie"])
