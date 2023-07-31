@@ -72,26 +72,6 @@ def aldis_all_brands(driver, wait):
 def has_numbers(inputString):
     return any(char.isdigit() for char in inputString)
 
-def aldis_sanitize_data(ingredients, removable_brand_names):
-    shortened_ingredients = []
-    '''for ingr in ingredients:
-        for brand in removable_brand_names:
-            if brand in ingr:
-                short_ingr = ingr.replace(brand, "")
-                short_ingr = short_ingr.replace(",", "")
-                shortened_ingredients.append(short_ingr)
-    ingredients = ingredients + shortened_ingredients
-    '''
-    stop_words = set(stopwords.words('english'))
-    common_food_words = {"pack","count","oz", "lb", "fat", "lean", "value", "ct", "g", "pound", "reduced", "fridge", "original", "full", "half", "size"}
-    stop_words = stop_words | common_food_words | set(removable_brand_names) # take the union of all sets
-    for ingr in ingredients:
-        tokenized_ingr = word_tokenize(ingr)
-        word = [w for w in tokenized_ingr if w not in stop_words and not has_numbers(w)]
-        shortened_ingredients.append(word)
-    ingredients = ingredients + shortened_ingredients
-    return ingredients
-
 def scrape_squirrel_aldis(ingredient_list):
     '''
 
@@ -138,7 +118,7 @@ def scrape_squirrel_aldis(ingredient_list):
             print("No brands button")
         page_results = driver.find_elements(By.XPATH, '//span[@class="e-8zabzc"]') # finds all titles of each food item, as this is all we care about
         stocked_items = [item.text.lower() for item in page_results]
-        stocked_items = aldis_sanitize_data(stocked_items, all_brands)
+        stocked_items = ingredient_sanitize_data(stocked_items, all_brands)
         (best_match, score) = process.extractOne(ingredient, stocked_items, scorer=fuzz.token_sort_ratio)
         if score > 70:
             results[i] = True
@@ -172,44 +152,6 @@ def giant_eagle_all_brands(driver, wait):
         result.append(text.lower())
     element.click()
     return result
-def giant_eagle_data_sanitation(ingredients, removable_brand_names):
-    '''
-    This takes in a list of ingredients and removes certain brand name from the product without altering it in
-    another way. All commas are removed as well.
-    We append the shortened products to the end instead of changing the original product,
-    incase the specific brand name is wanted
-
-    Notes: The data sanitation part could probably be more effective.
-    '''
-    shortened_ingredients = []
-    plural_brands = [brand + "s" for brand in removable_brand_names]
-    '''for ingr in ingredients:
-        ingr_lower = ingr.lower()
-        for brand in removable_brand_names:
-            if brand in ingr_lower:
-                short_ingr = ingr_lower.replace(brand, "")
-                short_ingr = short_ingr.replace(",", "")
-                shortened_ingredients.append(short_ingr)
-    ingredients = ingredients + shortened_ingredients
-    ingredients = [x.lower() for x in ingredients]
-    '''
-    stop_words = set(stopwords.words('english'))
-    common_food_words = {"pack", "count", "oz", "lb", "fat", "lean", "value", "ct", "g", "pound", "reduced", "fridge",
-                         "original", "full", "half", "size", "brand"}
-    stop_words = stop_words | common_food_words | set(removable_brand_names) | set(plural_brands)  # take the union of all sets
-    for ingr in ingredients:
-        ingr_lower = ingr
-        ingr_lower = ingr_lower.replace(",", "")
-        ingr_lower = ingr_lower.replace("%", "")
-        ingr_lower = ingr_lower.replace("'", "")
-        for brand in removable_brand_names:
-            if brand in ingr_lower:
-                ingr_lower = ingr_lower.replace(brand, "")
-        tokenized_ingr = word_tokenize(ingr_lower)
-        word = [w for w in tokenized_ingr if w not in stop_words and not has_numbers(w) and len(w) > 1]
-        shortened_ingredients.append(" ".join(word))
-    ingredients = ingredients + shortened_ingredients
-    return ingredients
 
 def print_ingredients(ingredients, line_width, length):
     count = 0
@@ -301,7 +243,7 @@ def scrape_squirrel_giant_eagle():
     # relative order of the items. there should be quite a lot, so this
     # is a necessary step
     all_ingredients = list(dict.fromkeys(all_ingredients))
-    all_ingredients = giant_eagle_data_sanitation(all_ingredients, all_brands)
+    all_ingredients = ingredient_sanitize_data(all_ingredients, all_brands)
     ln = len(all_ingredients)
     print("There are", ln," ingredients")
     #print_ingredients(all_ingredients, 5, ln)
@@ -331,14 +273,15 @@ def check_trader_joe_store(ingredient_list):
     We don't bother with brands here, since Trader Joe does not stock any popular brands
     '''
     options = FirefoxOptions()
+    options.add_argument("--headless")
     options.add_argument("--start-maximized")
     driver = webdriver.Firefox(options=options)
     results = [False] * len(ingredient_list)
     url = "https://www.traderjoes.com/home/search?q=x&section=products&global=no"
     driver.get(url)
-    wait = WebDriverWait(driver, 10)
+    wait = WebDriverWait(driver, 5)
     cookies_button = wait.until(EC.presence_of_element_located((By.XPATH,
-                                                               '//button[@class="Button_button__3Me73 Button_button_variant_secondary__RwIii"]')))
+                                                               '//button[@class="Button_button__3Me73 Button_button_variant_secondary__RwIii"]'))) # was getting weird exception with the cookies button, need to clear it
     cookies_button.click()
     search_button = wait.until(EC.presence_of_element_located((By.XPATH,
                                                                '//button[@class="Button_button__3Me73 Search_action__2LXEg Button_button_variant_viewLink__2W82s"]')))
@@ -412,8 +355,10 @@ def ingredient_sanitize_data(stocked_items, all_brands):
     return ingredients
 def check_all_stores(ingredient_list):
     #scrape_squirrel_giant_eagle()
+    trader_joe_results = check_trader_joe_store(ingredient_list)
     giant_eagle_results = check_giant_eagle_store(ingredient_list)
     aldis_results = scrape_squirrel_aldis(ingredient_list)
+    print(trader_joe_results)
     print(giant_eagle_results)
     print(aldis_results)
 
