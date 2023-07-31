@@ -23,6 +23,11 @@ when looking up items such as "Cheez-It Crackers", token_sort_ratio does not do 
 However, token_set_ratio is too broad, since I could be looking for "lemon" and get "lemon cheesecake" instead with token_set_ratio,
 so token_sort_ratio would work correctly here but token_set_ratio would not. It seems difficult to differentiate between these two scenarios,
 so I wonder if there is some better way to deal with this
+- MAIN ISSUE: It is very difficult, if not impossible, to do this with token similarity. Consider "honey" with "100% honey"
+vs "dark chocolate" with "dark chocolate ice cream". With thefuzz's token_sort_ratio, the honey is ranked closer to honeydew than 100% honey,
+which should be incorrect. However, with token_set_ratio, then dark chocolate and dark chocolate ice cream have a 100% similarity, even though
+the second item is very different. This suggests that there needs to be some understanding behind the titles of each product,
+so some sort of machine learning is required.
 
 '''
 
@@ -39,8 +44,8 @@ from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from thefuzz import fuzz
 from thefuzz import process
-
-from bs4 import BeautifulSoup
+from nltk.tokenize import sent_tokenize, word_tokenize
+from nltk.corpus import stopwords
 import time
 
 def similar(a, b):
@@ -64,14 +69,26 @@ def aldis_all_brands(driver, wait):
         result.append(text.lower())
     return result
 
+def has_numbers(inputString):
+    return any(char.isdigit() for char in inputString)
+
 def aldis_sanitize_data(ingredients, removable_brand_names):
     shortened_ingredients = []
-    for ingr in ingredients:
+    '''for ingr in ingredients:
         for brand in removable_brand_names:
             if brand in ingr:
                 short_ingr = ingr.replace(brand, "")
                 short_ingr = short_ingr.replace(",", "")
                 shortened_ingredients.append(short_ingr)
+    ingredients = ingredients + shortened_ingredients
+    '''
+    stop_words = set(stopwords.words('english'))
+    common_food_words = {"pack","count","oz", "lb", "fat", "lean", "value", "ct", "g", "pound", "reduced", "fridge", "original", "full", "half", "size"}
+    stop_words = stop_words | common_food_words | set(removable_brand_names) # take the union of all sets
+    for ingr in ingredients:
+        tokenized_ingr = word_tokenize(ingr)
+        word = [w for w in tokenized_ingr if w not in stop_words and not has_numbers(w)]
+        shortened_ingredients.append(word)
     ingredients = ingredients + shortened_ingredients
     return ingredients
 
@@ -123,7 +140,7 @@ def scrape_squirrel_aldis(ingredient_list):
         stocked_items = [item.text.lower() for item in page_results]
         stocked_items = aldis_sanitize_data(stocked_items, all_brands)
         (best_match, score) = process.extractOne(ingredient, stocked_items, scorer=fuzz.token_sort_ratio)
-        if score > 85:
+        if score > 70:
             results[i] = True
         #print(score, best_match, "\n")
 
@@ -132,6 +149,7 @@ def scrape_squirrel_aldis(ingredient_list):
     #print(results)
     end_time = time.time()
     #print("Total time is ", end_time - start_time)
+    return results
 
 def giant_eagle_all_brands(driver, wait):
     '''
@@ -150,6 +168,7 @@ def giant_eagle_all_brands(driver, wait):
         first_parentheses_idx = text.find('(')
         if first_parentheses_idx != -1:
             text = text[:first_parentheses_idx]
+        text = text.replace("'", "")
         result.append(text.lower())
     element.click()
     return result
@@ -163,7 +182,8 @@ def giant_eagle_data_sanitation(ingredients, removable_brand_names):
     Notes: The data sanitation part could probably be more effective.
     '''
     shortened_ingredients = []
-    for ingr in ingredients:
+    plural_brands = [brand + "s" for brand in removable_brand_names]
+    '''for ingr in ingredients:
         ingr_lower = ingr.lower()
         for brand in removable_brand_names:
             if brand in ingr_lower:
@@ -172,6 +192,23 @@ def giant_eagle_data_sanitation(ingredients, removable_brand_names):
                 shortened_ingredients.append(short_ingr)
     ingredients = ingredients + shortened_ingredients
     ingredients = [x.lower() for x in ingredients]
+    '''
+    stop_words = set(stopwords.words('english'))
+    common_food_words = {"pack", "count", "oz", "lb", "fat", "lean", "value", "ct", "g", "pound", "reduced", "fridge",
+                         "original", "full", "half", "size", "brand"}
+    stop_words = stop_words | common_food_words | set(removable_brand_names) | set(plural_brands)  # take the union of all sets
+    for ingr in ingredients:
+        ingr_lower = ingr
+        ingr_lower = ingr_lower.replace(",", "")
+        ingr_lower = ingr_lower.replace("%", "")
+        ingr_lower = ingr_lower.replace("'", "")
+        for brand in removable_brand_names:
+            if brand in ingr_lower:
+                ingr_lower = ingr_lower.replace(brand, "")
+        tokenized_ingr = word_tokenize(ingr_lower)
+        word = [w for w in tokenized_ingr if w not in stop_words and not has_numbers(w) and len(w) > 1]
+        shortened_ingredients.append(" ".join(word))
+    ingredients = ingredients + shortened_ingredients
     return ingredients
 
 def print_ingredients(ingredients, line_width, length):
@@ -210,7 +247,7 @@ def scrape_squirrel_giant_eagle():
     #options.add_argument("--headless")
     driver = webdriver.Firefox(options=options)
     action = AC(driver)
-    url = "https://shop.gianteagle.com/squirrel-hill/search"
+    url = "https://shop.gianteagle.com/squirrel-hill/search?cat=48&page=2"
     driver.get(url)
     time.sleep(5)
     #driver.maximize_window() # makes the window full_screen
@@ -227,7 +264,6 @@ def scrape_squirrel_giant_eagle():
         print("Page did not load in time")
         driver.quit()
         return
-    driver.get_screenshot_as_file("screenshot1.png")
     first_item_of_prev_iter, first_item_of_next_iter = "", ""
     #driver.get_screenshot_as_file("screenshot2.png")
 
@@ -250,7 +286,7 @@ def scrape_squirrel_giant_eagle():
                 counter = 0
             # this may add duplicates to our list, but we don't care
             for item in items:
-                all_ingredients.append(item.text)
+                all_ingredients.append(item.text.lower())
         except Exception as e:
             # this program frequently gets stale exceptions in the try statement above
             # what this does, essentially, is it retries loading the elements that show up
@@ -261,8 +297,6 @@ def scrape_squirrel_giant_eagle():
         action.send_keys(Keys.PAGE_DOWN).send_keys(Keys.PAGE_DOWN).send_keys(Keys.PAGE_DOWN).perform()
         # part of the logic in checking if we've reached the bottom
         first_item_of_prev_iter = first_item_of_next_iter
-
-    driver.get_screenshot_as_file("screenshot3.png")
     # removes all duplicates from the list, while maintaining the same
     # relative order of the items. there should be quite a lot, so this
     # is a necessary step
@@ -273,7 +307,7 @@ def scrape_squirrel_giant_eagle():
     #print_ingredients(all_ingredients, 5, ln)
     # writes the results to a file. after all, we don't want to be rerunning this everytime a user makes a request
     # instead, we should be loading up the file and searching the results on here
-    with open('ingredients_output.txt', 'w') as f:
+    with open('ingredients_output2.txt', 'w') as f:
         for item in all_ingredients:
             # write each item on a new line
             f.write(f"{item}\n")
@@ -282,7 +316,7 @@ def scrape_squirrel_giant_eagle():
 def check_giant_eagle_store(ingredient_list):
     ln = len(ingredient_list)
     res = [False] * ln
-    with open('ingredients_output.txt') as f:
+    with open('ingredients_output2.txt') as f:
         stocked_ingredients = f.read().splitlines()
     for i in range(ln):
         item = ingredient_list[i]
@@ -292,17 +326,102 @@ def check_giant_eagle_store(ingredient_list):
         print(score, best_match, "\n")
     return res
 
+def check_trader_joe_store(ingredient_list):
+    '''
+    We don't bother with brands here, since Trader Joe does not stock any popular brands
+    '''
+    options = FirefoxOptions()
+    options.add_argument("--start-maximized")
+    driver = webdriver.Firefox(options=options)
+    results = [False] * len(ingredient_list)
+    url = "https://www.traderjoes.com/home/search?q=x&section=products&global=no"
+    driver.get(url)
+    wait = WebDriverWait(driver, 10)
+    cookies_button = wait.until(EC.presence_of_element_located((By.XPATH,
+                                                               '//button[@class="Button_button__3Me73 Button_button_variant_secondary__RwIii"]')))
+    cookies_button.click()
+    search_button = wait.until(EC.presence_of_element_located((By.XPATH,
+                                                               '//button[@class="Button_button__3Me73 Search_action__2LXEg Button_button_variant_viewLink__2W82s"]')))
+    search_button.click()  # this clicks the search button so that we can input our search query
+    i = 0
+    for ingredient in ingredient_list:
+        text_box = wait.until(EC.presence_of_element_located((By.XPATH, '//input[@type="text"]')))
+        text_box.click()
+        text_box.clear()
+        text_box.send_keys(ingredient,
+                                Keys.ENTER)  # enters the ingredient we want to look for, and then begins the search
+        try:
+            search_all_results_button = wait.until(
+                EC.presence_of_element_located((By.XPATH, '//button[@type="submit"]')))
+            search_all_results_button.click()
+        except:
+            print("No ingredients found", ingredient)
+            i += 1
+            continue
+        try:
+            all_products_button = wait.until(
+                EC.presence_of_element_located((By.XPATH,
+                                                '//button[@class="Button_button__3Me73 SearchResults_searchResults__sectionButton__2pbDw"]')))
+            all_products_button.click()
+        except Exception as e:
+            print("Something went wrong 2", ingredient)
+            print(e, "\n\n")
+            i += 1
+            continue
+        try:
+            element = wait.until(EC.presence_of_element_located(
+                (By.XPATH, '//a[@class="Link_link__1AZfr SearchResultCard_searchResultCard__titleLink__2nz6x"]')))
+        except:
+            print("Elements not found for ingredient", ingredient)
+            i += 1
+            continue
+        page_results = driver.find_elements(By.XPATH,
+                                            '//a[@class="Link_link__1AZfr SearchResultCard_searchResultCard__titleLink__2nz6x"]')  # finds all titles of each food item, as this is all we care about
+        stocked_items = [item.text.lower() for item in page_results]
+        stocked_items = ingredient_sanitize_data(stocked_items, [])
+        (best_match, score) = process.extractOne(ingredient, stocked_items, scorer=fuzz.token_sort_ratio)
+        if score > 70:
+            results[i] = True
+        print(score, best_match, "\n")
+        i += 1
+    driver.quit()
+    # print(results)
+    # print("Total time is ", end_time - start_time)
+    return results
+
+def ingredient_sanitize_data(stocked_items, all_brands):
+    shortened_ingredients = []
+    plural_brands = [brand + "s" for brand in all_brands]
+    stop_words = set(stopwords.words('english'))
+    common_food_words = {"pack", "count", "oz", "lb", "fat", "lean", "value", "ct", "g", "pound", "reduced", "fridge",
+                         "original", "full", "half", "size", "brand"}
+    stop_words = stop_words | common_food_words | set(all_brands) | set(
+        plural_brands)  # take the union of all sets
+    for ingr in stocked_items:
+        ingr_lower = ingr
+        ingr_lower = ingr_lower.replace(",", "")
+        ingr_lower = ingr_lower.replace("%", "")
+        ingr_lower = ingr_lower.replace("'", "")
+        for brand in all_brands:
+            if brand in ingr_lower:
+                ingr_lower = ingr_lower.replace(brand, "")
+        tokenized_ingr = word_tokenize(ingr_lower)
+        word = [w for w in tokenized_ingr if w not in stop_words and not has_numbers(w) and len(w) > 1]
+        shortened_ingredients.append(" ".join(word))
+    ingredients = stocked_items + shortened_ingredients
+    return ingredients
 def check_all_stores(ingredient_list):
-    scrape_squirrel_giant_eagle()
+    #scrape_squirrel_giant_eagle()
     giant_eagle_results = check_giant_eagle_store(ingredient_list)
     aldis_results = scrape_squirrel_aldis(ingredient_list)
     print(giant_eagle_results)
     print(aldis_results)
 
-ingredient_list = ["banana", "pringles", "dark chocolate", "blurpies", "cheez-it crackers"]
-check_all_stores(ingredient_list)
-#scrape_squirrel_aldis(["banana", "pringles", "dark chocolate", "blurpies", "cheez-it crackers"])
+
+#check_all_stores(ingredient_list)
 # call the function to scrape Giant Eagle website
 #scrape_squirrel_giant_eagle()
+check_trader_joe_store(["bananas", "banana", "pringles", "teriyaki sauce", "general tso sauce"])
+#check_giant_eagle_store(["sour cream and onion pringles", "cheez-its crackers"])
 #print(fuzz.token_set_ratio("lemon cheesecake", "lemon"))
 #check_giant_eagle_store(["banana", "pringles", "dark chocolate", "blurpies", "kosher apple pie", "apple pie", "giant eagle apple pie"])
