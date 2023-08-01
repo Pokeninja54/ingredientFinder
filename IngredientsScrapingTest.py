@@ -47,6 +47,7 @@ from thefuzz import process
 from nltk.tokenize import sent_tokenize, word_tokenize
 from nltk.corpus import stopwords
 from multiprocessing import Pool
+from multiprocessing import Process
 
 import time
 
@@ -379,9 +380,7 @@ def ingredient_sanitize_data(stocked_items, all_brands):
     ingredients = stocked_items + shortened_ingredients
     return ingredients
 def check_all_stores(ingredient_list):
-    #scrape_squirrel_giant_eagle()
     start_time = time.time()
-    pool = Pool(3)
     '''
     trader_joe_results = check_trader_joe_store(ingredient_list)
     giant_eagle_results = check_giant_eagle_store(ingredient_list)
@@ -390,6 +389,8 @@ def check_all_stores(ingredient_list):
     print(giant_eagle_results)
     print(aldis_results)
     '''
+    '''
+    pool = Pool(3)
     trader_joe_results = pool.apply_async(check_trader_joe_store, [ingredient_list])
     answer1 = trader_joe_results.get(timeout=60)
     giant_eagle_results = pool.apply_async(check_giant_eagle_store, [ingredient_list])
@@ -399,7 +400,16 @@ def check_all_stores(ingredient_list):
     print(answer1)
     print(answer2)
     print(answer3)
-
+    '''
+    p1 = Process(target=check_trader_joe_store, args=(ingredient_list,))
+    p1.start()
+    p2 = Process(target=check_giant_eagle_store, args=(ingredient_list,))
+    p2.start()
+    p3 = Process(target=scrape_squirrel_aldis, args=(ingredient_list,))
+    p3.start()
+    p1.join()
+    p2.join()
+    p3.join()
     end_time = time.time()
     print("Total time taken was ", end_time - start_time)
 
