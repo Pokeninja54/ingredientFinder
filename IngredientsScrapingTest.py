@@ -46,6 +46,8 @@ from thefuzz import fuzz
 from thefuzz import process
 from nltk.tokenize import sent_tokenize, word_tokenize
 from nltk.corpus import stopwords
+from multiprocessing import Pool
+
 import time
 
 def similar(a, b):
@@ -93,7 +95,6 @@ def scrape_squirrel_aldis(ingredient_list):
     options.add_argument("--headless")
     driver = webdriver.Firefox(options=options)
     start_time = time.time()
-    ingredient_list = [x.lower() for x in ingredient_list]
     results = [False] * len(ingredient_list)
     url = "https://shop.aldi.us/store/aldi/storefront/?current_zip_code=15206&utm_source=yext&utm_medium=local&utm_campaign=brand&utm_content=shopnow_storepage"
     driver.get(url)
@@ -113,7 +114,6 @@ def scrape_squirrel_aldis(ingredient_list):
         all_brands = []
         try:
             all_brands = aldis_all_brands(driver, wait)
-            print(all_brands)
         except:
             print("No brands button")
         page_results = driver.find_elements(By.XPATH, '//span[@class="e-8zabzc"]') # finds all titles of each food item, as this is all we care about
@@ -122,7 +122,7 @@ def scrape_squirrel_aldis(ingredient_list):
         (best_match, score) = process.extractOne(ingredient, stocked_items, scorer=fuzz.token_sort_ratio)
         if score > 70:
             results[i] = True
-        #print(score, best_match, "\n")
+        print(score, best_match, "\n")
 
         i += 1
     driver.quit()
@@ -162,7 +162,7 @@ def print_ingredients(ingredients, line_width, length):
         print("\n")
         count += line_width
 
-def scrape_squirrel_giant_eagle():
+def check_giant_eagle_store(ingredient_list):
     '''
     The purpose of this function is to scrape the Giant Eagle website based in Squirrel Hill.
     It takes the products it finds and puts it into a list. I can then search through
@@ -184,7 +184,7 @@ def scrape_squirrel_giant_eagle():
         miss the hershey product... strange. Maybe it has something to do with how much
         I scroll down by?
     '''
-    options = FirefoxOptions()
+    '''options = FirefoxOptions()
     options.add_argument("--start-maximized")
     #options.add_argument("--headless")
     driver = webdriver.Firefox(options=options)
@@ -254,19 +254,44 @@ def scrape_squirrel_giant_eagle():
             # write each item on a new line
             f.write(f"{item}\n")
     driver.quit()
-
-def check_giant_eagle_store(ingredient_list):
-    ln = len(ingredient_list)
-    res = [False] * ln
-    with open('ingredients_output2.txt') as f:
-        stocked_ingredients = f.read().splitlines()
-    for i in range(ln):
-        item = ingredient_list[i]
-        (best_match, score) = process.extractOne(item, stocked_ingredients, scorer=fuzz.token_sort_ratio)
-        if score > 85:
-            res[i] = True
+    '''
+    options = FirefoxOptions()
+    options.add_argument("--start-maximized")
+    options.add_argument("--headless")
+    driver = webdriver.Firefox(options=options)
+    results = [False] * len(ingredient_list)
+    url = "https://shop.gianteagle.com/squirrel-hill/search?page=2"
+    driver.get(url)
+    wait = WebDriverWait(driver, 5)
+    search_button = wait.until(EC.presence_of_element_located((By.XPATH, '//input[@aria-label="Search"]')))
+    i = 0
+    for ingredient in ingredient_list:
+        search_button.click()  # this clicks the search button so that we can input our search query
+        search_button.clear()  # this clears anything in the search box
+        search_button.send_keys(ingredient,
+                                Keys.ENTER)  # enters the ingredient we want to look for, and then begins the search
+        try:
+            item = wait.until(EC.presence_of_element_located((By.XPATH, '//div[@class="sc-fbAgdq bNmZPW"]')))
+        except:
+            print("Elements not found for ingredient", ingredient)
+            i += 1
+            continue
+        all_brands = []
+        try:
+            all_brands = giant_eagle_all_brands(driver, wait)
+        except:
+            print("No brands button")
+        page_results = driver.find_elements(By.XPATH,
+                                            '//div[@class="sc-fbAgdq bNmZPW"]')  # finds all titles of each food item, as this is all we care about
+        stocked_items = [item.text.lower() for item in page_results]
+        stocked_items = ingredient_sanitize_data(stocked_items, all_brands)
+        (best_match, score) = process.extractOne(ingredient, stocked_items, scorer=fuzz.token_sort_ratio)
+        if score > 70:
+            results[i] = True
         print(score, best_match, "\n")
-    return res
+        i += 1
+    driver.quit()
+    return results
 
 def check_trader_joe_store(ingredient_list):
     '''
@@ -315,7 +340,7 @@ def check_trader_joe_store(ingredient_list):
             element = wait.until(EC.presence_of_element_located(
                 (By.XPATH, '//a[@class="Link_link__1AZfr SearchResultCard_searchResultCard__titleLink__2nz6x"]')))
         except:
-            print("Elements not found for ingredient", ingredient)
+            print("Elements not found when they should exist for ingredient: ", ingredient)
             i += 1
             continue
         page_results = driver.find_elements(By.XPATH,
@@ -355,18 +380,35 @@ def ingredient_sanitize_data(stocked_items, all_brands):
     return ingredients
 def check_all_stores(ingredient_list):
     #scrape_squirrel_giant_eagle()
+    start_time = time.time()
+    pool = Pool(3)
+    '''
     trader_joe_results = check_trader_joe_store(ingredient_list)
     giant_eagle_results = check_giant_eagle_store(ingredient_list)
     aldis_results = scrape_squirrel_aldis(ingredient_list)
     print(trader_joe_results)
     print(giant_eagle_results)
     print(aldis_results)
+    '''
+    trader_joe_results = pool.apply_async(check_trader_joe_store, [ingredient_list])
+    answer1 = trader_joe_results.get(timeout=60)
+    giant_eagle_results = pool.apply_async(check_giant_eagle_store, [ingredient_list])
+    answer2 = giant_eagle_results.get(timeout=60)
+    aldis_results = pool.apply_async(scrape_squirrel_aldis, [ingredient_list])
+    answer3 = aldis_results.get(timeout=60)
+    print(answer1)
+    print(answer2)
+    print(answer3)
 
+    end_time = time.time()
+    print("Total time taken was ", end_time - start_time)
 
-#check_all_stores(ingredient_list)
+if __name__ == '__main__':
+    ingredient_list = ["bananas", "banana", "pringles", "teriyaki sauce", "general tso sauce"]
+    check_all_stores(ingredient_list)
 # call the function to scrape Giant Eagle website
 #scrape_squirrel_giant_eagle()
-check_trader_joe_store(["bananas", "banana", "pringles", "teriyaki sauce", "general tso sauce"])
+#check_trader_joe_store(["bananas", "banana", "pringles", "teriyaki sauce", "general tso sauce"])
 #check_giant_eagle_store(["sour cream and onion pringles", "cheez-its crackers"])
 #print(fuzz.token_set_ratio("lemon cheesecake", "lemon"))
 #check_giant_eagle_store(["banana", "pringles", "dark chocolate", "blurpies", "kosher apple pie", "apple pie", "giant eagle apple pie"])
