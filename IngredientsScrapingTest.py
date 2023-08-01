@@ -3,15 +3,14 @@
 Project: Given a list of ingredients, find which stores nearby sell all of those ingredients. Currently
 focusing on supermarkets, but could do drugstores as well if this works out
 
-Idea 1: Gather all the ingredients into a database, and then check that with the ingredients list
-Idea 2: For each ingredient in the list, perform a search with the bot and see if it
-returns any results.
-Idea 2 may be easier since it could be challenging to effectively get every product?
+Accomplishes this by finding the search box for each website, searching for each ingredient in the ingredient list, and
+then scraping and processing the results of the individual searches. Currently supports multiprocessing to run the
+webscrapers in parallel.
 
-Side Note: If I use idea 2, then I could write a function that takes in a list of websites,
-and then it could check if it recognizes any of the key brands? This follows the
-assumption that websites of different branches will have the same structure
-(really just need the search button and food product structure to be the same)
+When processing the results, I am using fuzzy matching, as seen with thefuzz library. More specifically, I am using
+the token sort function, as this has had the best result so far, though it is easy to play around with this and
+try other functions by replacing the scorer attribute in the "check_ingredient_in_page_results" function. There
+is room for improvement here certainly.
 
 Potential issues for other users:
 - Program would not run unless I installed Selenium 4.9.0, due to a timeout error in the requests library.
@@ -29,16 +28,13 @@ which should be incorrect. However, with token_set_ratio, then dark chocolate an
 the second item is very different. This suggests that there needs to be some understanding behind the titles of each product,
 so some sort of machine learning is required.
 
+Currently supports Aldis, Giant Eagle, and Trader Joe's
+
 '''
 
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver import Chrome
-from selenium.webdriver import Firefox
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.action_chains import ActionChains as AC
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -46,14 +42,65 @@ from thefuzz import fuzz, process
 from nltk.tokenize import sent_tokenize, word_tokenize
 from nltk.corpus import stopwords
 from multiprocessing import Process, Queue
-
 import time
 
-def similar(a, b):
-    return fuzz.token_sort_ratio(a,b)
+SCORE_THRESHOLD = 70 # define this macro so that we can adjust the scoring threshold for each website.
+# unlikely that we want an individual threshold per website?
+WEBDRIVER_WAIT_THRESHOLD = 5 # how long any webdriver should wait for before giving up
 
-def aldis_all_brands(driver, wait):
+def has_numbers(inputString):
+    return any(char.isdigit() for char in inputString)
+
+def driver_startup():
+    '''
+    Returns: Driver with the correct options startup. This is because I use the same driver for every
+    website, may as well shorten it. Currently just runs it in headless mode with a maximized window.
+    Uses Firefox because many websites tend to block Chrome.
+    '''
+    options = FirefoxOptions()
+    options.add_argument("--start-maximized")
+    options.add_argument("--headless")
+    driver = webdriver.Firefox(options=options)
+    return driver
+
+def check_ingredient_in_page_results(ingredient, page_results, all_brands, results, i):
+    '''
+    This takes in the scraped results from a website, and sanitizes the data to make comparisons easier.
+    It then looks for the closest item in the sanitized data compared to our desired ingredient, and produces
+    some score. If this surpasses the score threshold, then our item is in the store with high probability.
+    '''
+    stocked_items = [item.text.lower() for item in page_results]
+    stocked_items = ingredient_sanitize_data(stocked_items, all_brands)
+    (best_match, score) = process.extractOne(ingredient, stocked_items, scorer=fuzz.token_sort_ratio)
+    if score > SCORE_THRESHOLD:
+        results[i] = True
+    #print(score, best_match, "\n")
+
+def print_ingredients(ingredients, line_width):
+    '''
+    Allows me to print the scraped results in a somewhat neat manner.
+    This is no longer being used.
+    '''
+    length = len(ingredients)
+    count = 0
+    while count < length:
+        for j in range(line_width):
+            if count + j < length:
+                print(ingredients[count + j])
+        print("\n")
+        count += line_width
+
+def aldis_all_brands(wait):
+    '''
+    This function clicks on the Brands button on the Aldi's website
+    and finds all of the brand names contained there.
+    '''
     elements = wait.until(EC.visibility_of_all_elements_located((By.XPATH, '//button[@class="e-1ff8o8k"]')))
+    '''
+    There are multiple elements with this xpath, and there is no easy way to find the Brands button (at least
+    not with the XPATH, could try another method if I want to remove the for loop below?). Thus, we check
+    each element found to see if it is the correct one.
+    '''
     for i in range(len(elements)):
         elem = elements[i]
         button_name = elem.find_element(By.XPATH, ".//span").text
@@ -62,42 +109,51 @@ def aldis_all_brands(driver, wait):
             break
         if i == len(elements) - 1:
             return []
-    time.sleep(1)  # not sure if necessary, check on this later
-    all_brand_names = driver.find_elements(By.XPATH, '//label[@class="e-1rv1880"]')
+    all_brand_names = wait.until(EC.presence_of_all_elements_located((By.XPATH, '//label[@class="e-1rv1880"]')))
     result = []
     for brand in all_brand_names:
         text = brand.text
-        result.append(text.lower())
+        if text != "":
+            result.append(text.lower())
+    print("All the brands are", result)
     return result
 
-def has_numbers(inputString):
-    return any(char.isdigit() for char in inputString)
-
-def scrape_squirrel_aldis(ingredient_list, queue):
+def giant_eagle_all_brands(wait):
     '''
+    This function clicks on the Brands button on the Giant Eagle website
+    and finds all of the brand names contained there. It removes the count of each brand, since
+    we only want the names.
+    '''
+    element = wait.until(EC.visibility_of_element_located((By.XPATH, '//button[@aria-label="Brand: "]')))
+    element.click()
+    time.sleep(1) # necessary, as otherwise the wait call below might fail. unclear why though, since it waits for 5 seconds, which should be plenty of time
+    all_brand_names = wait.until(EC.presence_of_all_elements_located((By.XPATH, '//div[@class="sc-cgHAeM jVHret"]'))) # '//div[@class="sc-cgHAeM jVHret"]'
+    result = []
+    for brand in all_brand_names:
+        text = brand.text
+        first_parentheses_idx = text.find('(')
+        # the giant eagle website stores the count of each brand in the form "giant eagle (14)", which we don't care for
+        if first_parentheses_idx != -1:
+            text = text[:first_parentheses_idx]
+        text = text.replace("'", "")
+        if text != "":
+            result.append(text.lower())
+    element.click()
+    print("All the brands are", result)
+    return result
 
+def check_aldis_store(ingredient_list, queue):
+    '''
     Returns: A list indicating which ingredients were found on the online website.
-
-    Current issues to fix:
-    - Items with long names aren't recognized as being in the system. For example, when looking up "Cheez-its",
-    it is labeled as "Cheez it cheese crackers, baked snack crackers, etc", and so the sequence matcher incorrectly thinks
-    that they are different items
-    - How to speed it up? Takes about a minute to load up and search for 5 ingredients, recipes are typically 5-15 ingredients
-        - One solution *would* be to do the initial approach of loading all the items off the website prior to any requests,
-        as searching a table is much faster than searching through the website
-    - Differentiating between specific ingredients is hard, as it recognizes "Grebinskiy's Teriyaki Sauce" as being
-    good enough for "Burman's Teriyaki Sauce". This seems very related to issue #1
-
+    Ingredient list is a list of ingredients that we are searching for, and queue
+    is used to store the results safely, as this function is a spawned process,
+    so returning the results is a bit finnicky otherwise
     '''
-    options = FirefoxOptions()
-    options.add_argument("--start-maximized")
-    options.add_argument("--headless")
-    driver = webdriver.Firefox(options=options)
-    start_time = time.time()
+    driver = driver_startup()
     results = [False] * len(ingredient_list)
     url = "https://shop.aldi.us/store/aldi/storefront/?current_zip_code=15206&utm_source=yext&utm_medium=local&utm_campaign=brand&utm_content=shopnow_storepage"
     driver.get(url)
-    wait = WebDriverWait(driver, 5)
+    wait = WebDriverWait(driver, WEBDRIVER_WAIT_THRESHOLD)
     search_button = wait.until(EC.presence_of_element_located((By.XPATH, '//input[@id="search-bar-input"]')))
     i = 0
     for ingredient in ingredient_list:
@@ -112,157 +168,25 @@ def scrape_squirrel_aldis(ingredient_list, queue):
             continue
         all_brands = []
         try:
-            all_brands = aldis_all_brands(driver, wait)
+            all_brands = aldis_all_brands(wait)
         except:
-            print("No brands button")
+            print("No ALDIS brands button for ingredient", ingredient)
         page_results = driver.find_elements(By.XPATH, '//span[@class="e-8zabzc"]') # finds all titles of each food item, as this is all we care about
-        stocked_items = [item.text.lower() for item in page_results]
-        stocked_items = ingredient_sanitize_data(stocked_items, all_brands)
-        (best_match, score) = process.extractOne(ingredient, stocked_items, scorer=fuzz.token_sort_ratio)
-        if score > 70:
-            results[i] = True
-        print(score, best_match, "\n")
-
+        check_ingredient_in_page_results(ingredient, page_results, all_brands, results, i)
         i += 1
     driver.quit()
-    #print(results)
-    end_time = time.time()
-    #print("Total time is ", end_time - start_time)
     queue.put(results)
     return results
 
-def giant_eagle_all_brands(driver, wait):
-    '''
-    This function clicks on the Brands button on the Giant Eagle website
-    and finds all of the brand names contained there. It removes the count of each brand, since
-    we only want the names.
-    '''
-    element = wait.until(EC.visibility_of_element_located((By.XPATH, '//button[@aria-label="Brand: "]')))
-    time.sleep(2)
-    element.click()
-    time.sleep(2) # not sure if necessary, check on this later
-    all_brand_names = driver.find_elements(By.XPATH, '//div[@class="sc-cgHAeM jVHret"]')
-    result = []
-    for brand in all_brand_names:
-        text = brand.text
-        first_parentheses_idx = text.find('(')
-        if first_parentheses_idx != -1:
-            text = text[:first_parentheses_idx]
-        text = text.replace("'", "")
-        result.append(text.lower())
-    element.click()
-    return result
-
-def print_ingredients(ingredients, line_width, length):
-    count = 0
-    while count < length:
-        for j in range(line_width):
-            if count + j < length:
-                print(ingredients[count + j])
-        print("\n")
-        count += line_width
-
 def check_giant_eagle_store(ingredient_list, queue):
     '''
-    The purpose of this function is to scrape the Giant Eagle website based in Squirrel Hill.
-    It takes the products it finds and puts it into a list. I can then search through
-    this list later to see if anything matches target ingredient list. This should
-    supposedly be fast, as any store should not stock more than 10000 unique items.
-
-    Current Issues to Fix:
-    - Running into the stale exception very frequently. It is unclear why this happens,
-    since I am waiting for the elements to appear, and I only interact with those elements.
-    May need to understand presence_of vs visibility_of better? Unclear if this is
-    a serious issue, but I just re-run the prompt and it seems to work fine
-        - Edit: If I have time.sleep(3) enabled, I don't get stale exceptions
-    - Serious issue: Certain products are never captured by webscraper. In the client
-    opened by the bot, these products simply don't show up on the webpage. No ideas
-    behind the reason why yet. (On average, 5-10% products are missed. These tend
-    to be towards the bottom of the list; e.g., for the candy section, the last 6
-    candies + a hershey product around the middle/bottom were skipped)
-        - Edit: Fullscreening my window significantly reduced this error rate? Now I only
-        miss the hershey product... strange. Maybe it has something to do with how much
-        I scroll down by?
+    Same as ALDI's function, but for Giant Eagle
     '''
-    '''options = FirefoxOptions()
-    options.add_argument("--start-maximized")
-    #options.add_argument("--headless")
-    driver = webdriver.Firefox(options=options)
-    action = AC(driver)
-    url = "https://shop.gianteagle.com/squirrel-hill/search?cat=48&page=2"
-    driver.get(url)
-    time.sleep(5)
-    #driver.maximize_window() # makes the window full_screen
-    wait = WebDriverWait(driver, 15) # wait at most 15 seconds for anything to load
-    all_brands = giant_eagle_all_brands(driver, wait)
-    all_ingredients = []
-    try:
-        # if we are in category "x" of the website, it clicks on this word x on the page
-        # this is necessary because we need the page-down command to work
-        element = wait.until(EC.visibility_of_element_located((By.XPATH, '//h1[@class="sc-gJSbpZ kGDYpn"]')))
-        element.click()
-    except:
-        # if the page doesn't load in time (namely 10 seconds), we quit the program
-        print("Page did not load in time")
-        driver.quit()
-        return
-    first_item_of_prev_iter, first_item_of_next_iter = "", ""
-    #driver.get_screenshot_as_file("screenshot2.png")
-
-    counter = 0
-    # counter is used to check how many iterations we've gotten
-    # the same first element.
-    while True:
-        try:
-            # find all product names on the page that load
-            items = wait.until(EC.presence_of_all_elements_located((By.XPATH, '//div[@class="sc-fbAgdq bNmZPW"]')))
-            # get the first product name that is in the list. the logic below is used
-            # to check if we've hit the bottom of the page, and we keep getting
-            # the same results
-            first_item_of_next_iter = items[0].text
-            if first_item_of_next_iter == first_item_of_prev_iter:
-                counter += 1
-                if counter > 100:
-                    break
-            else:
-                counter = 0
-            # this may add duplicates to our list, but we don't care
-            for item in items:
-                all_ingredients.append(item.text.lower())
-        except Exception as e:
-            # this program frequently gets stale exceptions in the try statement above
-            # what this does, essentially, is it retries loading the elements that show up
-            # while ONLY changing the count number. this problem is reduced if we implement
-            # some forced waiting at the start of the while loop, e.g. time.sleep(3)
-            #print("\n", "Throwed error on count", count, "\n", e)
-            continue
-        action.send_keys(Keys.PAGE_DOWN).send_keys(Keys.PAGE_DOWN).send_keys(Keys.PAGE_DOWN).perform()
-        # part of the logic in checking if we've reached the bottom
-        first_item_of_prev_iter = first_item_of_next_iter
-    # removes all duplicates from the list, while maintaining the same
-    # relative order of the items. there should be quite a lot, so this
-    # is a necessary step
-    all_ingredients = list(dict.fromkeys(all_ingredients))
-    all_ingredients = ingredient_sanitize_data(all_ingredients, all_brands)
-    ln = len(all_ingredients)
-    print("There are", ln," ingredients")
-    #print_ingredients(all_ingredients, 5, ln)
-    # writes the results to a file. after all, we don't want to be rerunning this everytime a user makes a request
-    # instead, we should be loading up the file and searching the results on here
-    with open('ingredients_output2.txt', 'w') as f:
-        for item in all_ingredients:
-            # write each item on a new line
-            f.write(f"{item}\n")
-    driver.quit()
-    '''
-    options = FirefoxOptions()
-    options.add_argument("--start-maximized")
-    options.add_argument("--headless")
-    driver = webdriver.Firefox(options=options)
+    driver = driver_startup()
     results = [False] * len(ingredient_list)
     url = "https://shop.gianteagle.com/squirrel-hill/search?page=2"
     driver.get(url)
-    wait = WebDriverWait(driver, 5)
+    wait = WebDriverWait(driver, WEBDRIVER_WAIT_THRESHOLD)
     search_button = wait.until(EC.presence_of_element_located((By.XPATH, '//input[@aria-label="Search"]')))
     i = 0
     for ingredient in ingredient_list:
@@ -278,17 +202,12 @@ def check_giant_eagle_store(ingredient_list, queue):
             continue
         all_brands = []
         try:
-            all_brands = giant_eagle_all_brands(driver, wait)
+            all_brands = giant_eagle_all_brands(wait)
         except:
-            print("No brands button")
+            print("No Giant Eagle brands button for ingredient", ingredient)
         page_results = driver.find_elements(By.XPATH,
                                             '//div[@class="sc-fbAgdq bNmZPW"]')  # finds all titles of each food item, as this is all we care about
-        stocked_items = [item.text.lower() for item in page_results]
-        stocked_items = ingredient_sanitize_data(stocked_items, all_brands)
-        (best_match, score) = process.extractOne(ingredient, stocked_items, scorer=fuzz.token_sort_ratio)
-        if score > 70:
-            results[i] = True
-        print(score, best_match, "\n")
+        check_ingredient_in_page_results(ingredient, page_results, all_brands, results, i)
         i += 1
     driver.quit()
     queue.put(results)
@@ -296,16 +215,13 @@ def check_giant_eagle_store(ingredient_list, queue):
 
 def check_trader_joe_store(ingredient_list, queue):
     '''
-    We don't bother with brands here, since Trader Joe does not stock any popular brands
+    Same as ALDI's function, but for Trader Joe's
     '''
-    options = FirefoxOptions()
-    options.add_argument("--headless")
-    options.add_argument("--start-maximized")
-    driver = webdriver.Firefox(options=options)
+    driver = driver_startup()
     results = [False] * len(ingredient_list)
     url = "https://www.traderjoes.com/home/search?q=x&section=products&global=no"
     driver.get(url)
-    wait = WebDriverWait(driver, 5)
+    wait = WebDriverWait(driver, WEBDRIVER_WAIT_THRESHOLD)
     cookies_button = wait.until(EC.presence_of_element_located((By.XPATH,
                                                                '//button[@class="Button_button__3Me73 Button_button_variant_secondary__RwIii"]'))) # was getting weird exception with the cookies button, need to clear it
     cookies_button.click()
@@ -324,7 +240,7 @@ def check_trader_joe_store(ingredient_list, queue):
                 EC.presence_of_element_located((By.XPATH, '//button[@type="submit"]')))
             search_all_results_button.click()
         except:
-            print("No ingredients found", ingredient)
+            print("No ingredients found for ingredient: ", ingredient)
             i += 1
             continue
         try:
@@ -332,9 +248,8 @@ def check_trader_joe_store(ingredient_list, queue):
                 EC.presence_of_element_located((By.XPATH,
                                                 '//button[@class="Button_button__3Me73 SearchResults_searchResults__sectionButton__2pbDw"]')))
             all_products_button.click()
-        except Exception as e:
-            print("Something went wrong 2", ingredient)
-            print(e, "\n\n")
+        except:
+            print("All products button missing for ingredient: ", ingredient)
             i += 1
             continue
         try:
@@ -346,21 +261,22 @@ def check_trader_joe_store(ingredient_list, queue):
             continue
         page_results = driver.find_elements(By.XPATH,
                                             '//a[@class="Link_link__1AZfr SearchResultCard_searchResultCard__titleLink__2nz6x"]')  # finds all titles of each food item, as this is all we care about
-        stocked_items = [item.text.lower() for item in page_results]
-        stocked_items = ingredient_sanitize_data(stocked_items, [])
-        (best_match, score) = process.extractOne(ingredient, stocked_items, scorer=fuzz.token_sort_ratio)
-        if score > 70:
-            results[i] = True
-        #print(score, best_match, "\n")
+        check_ingredient_in_page_results(ingredient, page_results, [], results, i)
+        # note that we pass in the empty list for the brands. this is unique to trader joes, as they don't stock popular brands
         i += 1
     driver.quit()
-    print("Results is ", results)
-    # print("Total time is ", end_time - start_time)
     queue.put(results)
-    #print("Res is ", res)
     return results
 
 def ingredient_sanitize_data(stocked_items, all_brands):
+    '''
+    This is a function that is used purely because we are using fuzzy matching for our check
+    for ingredients in the scraped data. As we use the token sort ratio, we don't want words
+    that are meaningless devaluing the ratio, so we remove certain tokens from each stocked item
+    to make the comparison better. This includes brand names, amounts of each item, and other
+    more generic terms. We only append this to our original list in case the user does want
+    to look for these specific terms/brands
+    '''
     shortened_ingredients = []
     plural_brands = [brand + "s" for brand in all_brands]
     stop_words = set(stopwords.words('english'))
@@ -381,33 +297,28 @@ def ingredient_sanitize_data(stocked_items, all_brands):
         shortened_ingredients.append(" ".join(word))
     ingredients = stocked_items + shortened_ingredients
     return ingredients
-def check_all_stores(ingredient_list):
+def check_all_stores(ingredient_list, list_of_store_fns):
+    '''
+    Driver function that implements multiprocessing to webscrape each supermarket website
+    in parallel. If there are n websites, this is a speedup by n times roughly compared to sequential
+    webscraping.
+    '''
     start_time = time.time()
     q = Queue()
-    #res1, res2, res3 = [False] * len(ingredient_list),[],[]
     results = []
-    p1 = Process(target=check_trader_joe_store, args=(ingredient_list,q,))
-    p1.start()
-    p2 = Process(target=check_giant_eagle_store, args=(ingredient_list,q,))
-    p2.start()
-    p3 = Process(target=scrape_squirrel_aldis, args=(ingredient_list,q,))
-    p3.start()
-    results.append(q.get())
-    results.append(q.get())
-    results.append(q.get())
-    p1.join()
-    p2.join()
-    p3.join()
+    processes = []
+    for store_fn in list_of_store_fns:
+        p = Process(target=store_fn, args=(ingredient_list,q,))
+        processes.append(p)
+        p.start()
+    for _ in processes:
+        results.append(q.get())
+    for process in processes:
+        process.join()
     print(results)
     end_time = time.time()
     print("Total time taken was ", end_time - start_time)
 
 if __name__ == '__main__':
     ingredient_list = ["bananas", "banana", "pringles", "teriyaki sauce", "general tso sauce"]
-    check_all_stores(ingredient_list)
-# call the function to scrape Giant Eagle website
-#scrape_squirrel_giant_eagle()
-#check_trader_joe_store(["bananas", "banana", "pringles", "teriyaki sauce", "general tso sauce"])
-#check_giant_eagle_store(["sour cream and onion pringles", "cheez-its crackers"])
-#print(fuzz.token_set_ratio("lemon cheesecake", "lemon"))
-#check_giant_eagle_store(["banana", "pringles", "dark chocolate", "blurpies", "kosher apple pie", "apple pie", "giant eagle apple pie"])
+    check_all_stores(ingredient_list, [check_trader_joe_store, check_giant_eagle_store, check_aldis_store])
