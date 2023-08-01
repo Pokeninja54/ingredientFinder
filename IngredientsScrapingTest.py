@@ -42,12 +42,10 @@ from selenium.webdriver.common.action_chains import ActionChains as AC
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from thefuzz import fuzz
-from thefuzz import process
+from thefuzz import fuzz, process
 from nltk.tokenize import sent_tokenize, word_tokenize
 from nltk.corpus import stopwords
-from multiprocessing import Pool
-from multiprocessing import Process
+from multiprocessing import Process, Queue
 
 import time
 
@@ -75,7 +73,7 @@ def aldis_all_brands(driver, wait):
 def has_numbers(inputString):
     return any(char.isdigit() for char in inputString)
 
-def scrape_squirrel_aldis(ingredient_list):
+def scrape_squirrel_aldis(ingredient_list, queue):
     '''
 
     Returns: A list indicating which ingredients were found on the online website.
@@ -130,6 +128,7 @@ def scrape_squirrel_aldis(ingredient_list):
     #print(results)
     end_time = time.time()
     #print("Total time is ", end_time - start_time)
+    queue.put(results)
     return results
 
 def giant_eagle_all_brands(driver, wait):
@@ -163,7 +162,7 @@ def print_ingredients(ingredients, line_width, length):
         print("\n")
         count += line_width
 
-def check_giant_eagle_store(ingredient_list):
+def check_giant_eagle_store(ingredient_list, queue):
     '''
     The purpose of this function is to scrape the Giant Eagle website based in Squirrel Hill.
     It takes the products it finds and puts it into a list. I can then search through
@@ -292,9 +291,10 @@ def check_giant_eagle_store(ingredient_list):
         print(score, best_match, "\n")
         i += 1
     driver.quit()
+    queue.put(results)
     return results
 
-def check_trader_joe_store(ingredient_list):
+def check_trader_joe_store(ingredient_list, queue):
     '''
     We don't bother with brands here, since Trader Joe does not stock any popular brands
     '''
@@ -351,11 +351,13 @@ def check_trader_joe_store(ingredient_list):
         (best_match, score) = process.extractOne(ingredient, stocked_items, scorer=fuzz.token_sort_ratio)
         if score > 70:
             results[i] = True
-        print(score, best_match, "\n")
+        #print(score, best_match, "\n")
         i += 1
     driver.quit()
-    # print(results)
+    print("Results is ", results)
     # print("Total time is ", end_time - start_time)
+    queue.put(results)
+    #print("Res is ", res)
     return results
 
 def ingredient_sanitize_data(stocked_items, all_brands):
@@ -381,35 +383,22 @@ def ingredient_sanitize_data(stocked_items, all_brands):
     return ingredients
 def check_all_stores(ingredient_list):
     start_time = time.time()
-    '''
-    trader_joe_results = check_trader_joe_store(ingredient_list)
-    giant_eagle_results = check_giant_eagle_store(ingredient_list)
-    aldis_results = scrape_squirrel_aldis(ingredient_list)
-    print(trader_joe_results)
-    print(giant_eagle_results)
-    print(aldis_results)
-    '''
-    '''
-    pool = Pool(3)
-    trader_joe_results = pool.apply_async(check_trader_joe_store, [ingredient_list])
-    answer1 = trader_joe_results.get(timeout=60)
-    giant_eagle_results = pool.apply_async(check_giant_eagle_store, [ingredient_list])
-    answer2 = giant_eagle_results.get(timeout=60)
-    aldis_results = pool.apply_async(scrape_squirrel_aldis, [ingredient_list])
-    answer3 = aldis_results.get(timeout=60)
-    print(answer1)
-    print(answer2)
-    print(answer3)
-    '''
-    p1 = Process(target=check_trader_joe_store, args=(ingredient_list,))
+    q = Queue()
+    #res1, res2, res3 = [False] * len(ingredient_list),[],[]
+    results = []
+    p1 = Process(target=check_trader_joe_store, args=(ingredient_list,q,))
     p1.start()
-    p2 = Process(target=check_giant_eagle_store, args=(ingredient_list,))
+    p2 = Process(target=check_giant_eagle_store, args=(ingredient_list,q,))
     p2.start()
-    p3 = Process(target=scrape_squirrel_aldis, args=(ingredient_list,))
+    p3 = Process(target=scrape_squirrel_aldis, args=(ingredient_list,q,))
     p3.start()
+    results.append(q.get())
+    results.append(q.get())
+    results.append(q.get())
     p1.join()
     p2.join()
     p3.join()
+    print(results)
     end_time = time.time()
     print("Total time taken was ", end_time - start_time)
 
